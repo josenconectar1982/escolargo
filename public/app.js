@@ -154,9 +154,13 @@ function mountMap(slotId) {
 }
 function destroyMap() { if (S.map) S.map.remove(); S.map = null; S.mapEl = null; S.layers = null; S.fitted = ''; S.busMarkers = {}; }
 const busIcon = () => L.divIcon({ className: '', html: `<div class="bus-pin">${ICON.bus.replace('width="22" height="22"', 'width="18" height="18"')}</div>`, iconSize: [34, 34], iconAnchor: [17, 17] });
-function drawMap({ buses = [], stops = [], school, line = [] }) {
+function drawMap({ buses = [], stops = [], school, line = [], trail = [], plan = null }) {
   if (!S.map) return;
-  S.layers.clearLayers(); S.busMarkers = {};
+  S.layers.clearLayers(); S.busMarkers = {}; S.trailLine = null;
+  // Calles por donde YA pasó el bus (GPS real)
+  if (trail.length > 1) S.trailLine = L.polyline(trail, { color: '#4B2CA0', weight: 6, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }).addTo(S.layers);
+  // Calles por donde VA a pasar
+  if (plan && plan.length > 1) { L.polyline(plan, { color: '#12C4A8', weight: 6, opacity: 0.95, dashArray: '2 10', lineCap: 'round' }).addTo(S.layers); line = []; }
   const pts = [];
   if (school && school.lat != null) {
     L.marker([school.lat, school.lng], { icon: L.divIcon({ className: '', html: `<div class="school-pin">Colegio</div>`, iconSize: [60, 24], iconAnchor: [30, 12] }), title: school.name }).addTo(S.layers);
@@ -168,7 +172,7 @@ function drawMap({ buses = [], stops = [], school, line = [] }) {
     pts.push([s.lat, s.lng]);
   }
   const ln = line.filter((p) => p && p.lat != null).map((p) => [p.lat, p.lng]);
-  if (ln.length > 1) L.polyline(ln, { color: '#4B2CA0', weight: 5, opacity: 0.7, dashArray: '8 8' }).addTo(S.layers);
+  if (ln.length > 1) L.polyline(ln, { color: '#12C4A8', weight: 5, opacity: 0.8, dashArray: '2 10' }).addTo(S.layers);
   for (const b of buses) {
     if (b.lat == null) continue;
     S.busMarkers[b.route_id] = L.marker([b.lat, b.lng], { icon: busIcon(), title: b.label, zIndexOffset: 1000 }).bindTooltip(esc(b.label)).addTo(S.layers);
@@ -188,7 +192,16 @@ function moveBus(routeId, lat, lng) {
   let m = S.busMarkers[routeId];
   if (!m) m = S.busMarkers[routeId] = L.marker([lat, lng], { icon: busIcon(), zIndexOffset: 1000 }).addTo(S.layers);
   else m.setLatLng([lat, lng]);
+  if (S.trailLine) S.trailLine.addLatLng([lat, lng]);
+  else if (S.layers) S.trailLine = L.polyline([[lat, lng]], { color: '#4B2CA0', weight: 6, opacity: 0.9, lineCap: 'round' }).addTo(S.layers);
   if (!S.map.getBounds().pad(-0.15).contains([lat, lng])) S.map.panTo([lat, lng]);
+}
+
+const MAP_LEGEND = `<div class="legend"><span><i style="background:#4B2CA0"></i>Ya recorrió</span><span><i class="dash"></i>Por recorrer</span></div>`;
+function streetsCard(streets) {
+  if (!streets || !streets.length) return '';
+  return `<div class="card"><h3>Calles por donde ha pasado</h3><div class="timeline">${streets.slice(0, 15).map((x, i) => `
+    <div class="tl"><div class="dot"><span style="${i ? 'background:#AFA9EC' : ''}"></span><span></span></div><div class="txt"><span>${i ? '' : '<b>Ahora: </b>'}${esc(x.street)}</span><span class="muted">${hora(x.at)}</span></div></div>`).join('')}</div></div>`;
 }
 
 // ---------- PADRES ----------
@@ -224,9 +237,10 @@ function viewParent() {
     const canAbsent = (k) => !t || k.state === 'pendiente' || k.state === 'no_va';
     return `
     ${banner}
-    <div id="mapslot-${i}"></div>
+    <div id="mapslot-${i}"></div>${t ? MAP_LEGEND : ''}
     <div class="card row" style="align-items:flex-start">
       <div>${etaLabel ? `<div class="muted" style="font-weight:700">${etaLabel}</div><div class="big">${etaVal != null ? etaVal + ' min' : '—'}</div>` : `<div class="muted" style="font-weight:700">${esc(v.name)}</div><div style="font-size:20px;font-weight:800">${shiftName(shift)}</div>`}
+        ${t && r.street ? `<div style="font-weight:800;margin-top:4px">Va por: ${esc(r.street)}</div>` : ''}
         ${t && t.last_at ? `<div class="muted">GPS actualizado ${hora(t.last_at)}</div>` : ''}</div>
       <div style="text-align:right;font-size:13px;line-height:1.6">
         <span class="plate">${esc(v.plate || '—')}</span>
@@ -246,6 +260,7 @@ function viewParent() {
         ${canAbsent(k) ? `<button class="btn small" data-absent="${k.id}" data-shift="${shift}" data-cancel="${k.state === 'no_va' ? 1 : ''}">${k.state === 'no_va' ? `Sí va hoy (${shiftName(shift).toLowerCase()})` : `Hoy no va (${shiftName(shift).toLowerCase()})`}</button>` : ''}`).join('')}
       </div>
     </div>
+    ${t ? streetsCard(r.streets) : ''}
     ${t ? `<div class="card"><h3>Recorrido de hoy</h3><div class="timeline">${r.events.map((e) => `
       <div class="tl"><div class="dot"><span></span><span></span></div><div class="txt"><span>${e.student_name ? `<b>${esc(e.student_name.split(' ')[0])}</b> ` : ''}${EV_TXT[e.type] || esc(e.type)}${e.type === 'retraso' ? ': ' + esc(e.note) : ''}</span><span class="muted">${hora(e.at)}</span></div></div>`).join('')}
     </div></div>` : ''}
@@ -262,6 +277,7 @@ function bindParent() {
       buses: r.trip && r.trip.lat != null ? [{ route_id: r.route.id, lat: r.trip.lat, lng: r.trip.lng, label: `${r.route.name} · ${r.route.plate}` }] : [],
       stops: r.kids.map((k) => ({ lat: k.lat, lng: k.lng, label: `Parada de ${k.name}`, done: ['subio', 'bajo', 'en_colegio'].includes(k.state) })),
       school: { lat: r.route.school_lat, lng: r.route.school_lng, name: r.route.school_name },
+      trail: r.trail || [], plan: r.plan,
       line: r.trip && r.trip.lat != null ? [{ lat: r.trip.lat, lng: r.trip.lng }, ...r.kids.filter((k) => (r.trip.shift === 'manana' ? k.state === 'pendiente' : k.state === 'subio')).map((k) => ({ lat: k.lat, lng: k.lng })), ...(r.trip.shift === 'manana' ? [{ lat: r.route.school_lat, lng: r.route.school_lng }] : [])] : [],
     });
   }
@@ -322,7 +338,8 @@ function viewAide() {
       <button class="btn ${d.shift === 'manana' ? 'primary' : ''}" data-start="manana">Iniciar ruta de la mañana</button>
       <button class="btn ${d.shift === 'tarde' ? 'primary' : ''}" data-start="tarde">Iniciar ruta de la tarde</button>
     </div>`}
-  <div id="mapslot"></div>
+  <div id="mapslot"></div>${t ? MAP_LEGEND : ''}
+  ${t && d.street ? `<div class="card" style="font-weight:800">Va por: ${esc(d.street)}</div>` : ''}
   <div class="card" style="background:transparent;padding:0">
     <h3 style="margin-top:6px">${shift === 'manana' ? 'Orden de recogida' : 'Orden de entrega'} · ${shiftName(shift)}</h3>
     <div class="list">${st.map((s, i) => `
@@ -343,6 +360,7 @@ function bindAide() {
     buses: t && t.last_lat != null ? [{ route_id: d.route.id, lat: t.last_lat, lng: t.last_lng, label: d.route.plate }] : [],
     stops: d.students.filter((s) => s.state !== 'no_va').map((s) => ({ lat: s.lat, lng: s.lng, label: s.name, done: ['subio', 'bajo', 'en_colegio'].includes(s.state) })),
     school: { lat: d.route.school_lat, lng: d.route.school_lng, name: d.route.school_name },
+    trail: d.trail || [], plan: d.plan,
     line: t && t.last_lat != null ? [{ lat: t.last_lat, lng: t.last_lng }, ...d.students.filter((s) => (t.shift === 'manana' ? s.state === 'pendiente' : s.state === 'subio')).map((s) => ({ lat: s.lat, lng: s.lng })), ...(t.shift === 'manana' ? [{ lat: d.route.school_lat, lng: d.route.school_lng }] : [])] : [],
   });
   document.querySelectorAll('[data-start]').forEach((b) => (b.onclick = async () => {
@@ -394,7 +412,7 @@ function startGps() {
 function stopGps() { if (S.gpsWatch != null) navigator.geolocation.clearWatch(S.gpsWatch); S.gpsWatch = null; }
 
 // Simulación para probar sin manejar: el bus va de parada en parada y espera a que la auxiliar marque a los estudiantes
-function startSim() {
+async function startSim() {
   const d = S.data; if (!d || !d.trip) return;
   stopGps();
   const morning = d.trip.shift === 'manana';
@@ -412,11 +430,24 @@ function startSim() {
   const away = { lat: first.lat + (first.lat - school.lat) * 0.25, lng: first.lng + (first.lng - school.lng) * 0.25 };
   const startPt = here && kmBetween(here, first) < 5 ? here : morning ? away : school;
   const way = [startPt, ...stops, ...(morning ? [{ ...school, end: true }] : [])];
+  S.sim = 'cargando'; S.gpsMsg = 'Preparando el recorrido por las calles…'; render();
+  let legs = [];
+  try { legs = (await api('/api/aide/sim-route', { points: way.map((p) => ({ lat: p.lat, lng: p.lng })) })).legs || []; } catch {}
+  if (S.sim !== 'cargando') return; // se detuvo mientras cargaba
+  S.sim = null;
   const path = [];
   for (let i = 0; i < way.length - 1; i++) {
     const a = way[i], b = way[i + 1];
-    const n = Math.min(40, Math.max(3, Math.round(Math.hypot(a.lat - b.lat, a.lng - b.lng) / 0.0012)));
-    for (let k = 1; k <= n; k++) path.push({ lat: a.lat + ((b.lat - a.lat) * k) / n, lng: a.lng + ((b.lng - a.lng) * k) / n, stop: k === n ? b : null });
+    const coords = legs[i];
+    if (coords && coords.length > 1) {
+      // sigue las calles reales: un punto cada ~90 m
+      let last = a;
+      for (const [lat, lng] of coords) if (kmBetween(last, { lat, lng }) > 0.09) { path.push({ lat, lng, stop: null }); last = { lat, lng }; }
+      path.push({ lat: b.lat, lng: b.lng, stop: b });
+    } else {
+      const n = Math.min(40, Math.max(3, Math.round(Math.hypot(a.lat - b.lat, a.lng - b.lng) / 0.0012)));
+      for (let k = 1; k <= n; k++) path.push({ lat: a.lat + ((b.lat - a.lat) * k) / n, lng: a.lng + ((b.lng - a.lng) * k) / n, stop: k === n ? b : null });
+    }
   }
   let i = 0, waitingAt = null;
   S.gpsMsg = 'Simulación de recorrido activa';
@@ -439,7 +470,7 @@ function startSim() {
   }, 1500);
   render();
 }
-function stopSim() { if (S.sim) { clearInterval(S.sim); S.sim = null; S.gpsMsg = ''; if (S.user && S.user.role === 'auxiliar' && S.data) render(); } }
+function stopSim() { if (S.sim) { if (S.sim !== 'cargando') clearInterval(S.sim); S.sim = null; S.gpsMsg = ''; if (S.user && S.user.role === 'auxiliar' && S.data) render(); } }
 
 // ---------- COLEGIO ----------
 function viewSchool() {
@@ -472,9 +503,9 @@ function viewSchool() {
   <div id="mapslot"></div>
   <div class="cols" style="margin-top:12px">
     <section class="main card" style="margin-top:0"><h2>Estado de las rutas</h2>
-      <div class="table-box"><table><thead><tr><th>Ruta</th><th>Vehículo</th><th>Auxiliar</th><th>Conductor</th><th>A bordo</th><th>Llegada</th><th>Estado</th></tr></thead><tbody>
+      <div class="table-box"><table><thead><tr><th>Ruta</th><th>Vehículo</th><th>Auxiliar</th><th>Conductor</th><th>A bordo</th><th>Va por</th><th>Llegada</th><th>Estado</th></tr></thead><tbody>
       ${d.routes.map((r) => `<tr><td><b>${esc(r.route.name)}</b></td><td>${esc(r.route.plate || '—')}</td><td>${esc(r.route.aide_name || 'Sin asignar')}</td><td>${esc(r.route.driver_name || '—')}</td>
-        <td>${r.counts.abordo} / ${r.counts.total - r.counts.no_va}</td><td>${r.trip && r.school_eta_min != null ? `~${r.school_eta_min} min` : '—'}</td><td>${pill(r)}</td></tr>`).join('')}
+        <td>${r.counts.abordo} / ${r.counts.total - r.counts.no_va}</td><td>${r.trip && r.street ? esc(r.street) : '—'}</td><td>${r.trip && r.school_eta_min != null ? `~${r.school_eta_min} min` : '—'}</td><td>${pill(r)}</td></tr>`).join('')}
       </tbody></table></div>
     </section>
     <section class="side">
@@ -495,7 +526,7 @@ function bindSchool() {
   mountMap('mapslot');
   drawMap({
     buses: d.routes.filter((r) => r.trip && r.trip.last_lat != null).map((r) => ({ route_id: r.route.id, lat: r.trip.last_lat, lng: r.trip.last_lng, label: `${r.route.name} · ${r.route.plate}` })),
-    stops: [], school: d.school,
+    stops: [], school: d.school, trail: d.routes.length === 1 ? d.routes[0].trail || [] : [],
   });
   bThreads.onclick = openThreads;
 }
@@ -516,6 +547,7 @@ function connectStream() {
   S.es.addEventListener('refresh', () => loadSoon(300));
   S.es.addEventListener('location', (ev) => {
     const p = JSON.parse(ev.data);
+    if (p.street) document.querySelectorAll('[data-street]').forEach((el) => (el.textContent = p.street));
     const had = !!S.busMarkers[p.route_id];
     moveBus(p.route_id, p.lat, p.lng);
     loadSoon(had ? 4000 : 300);

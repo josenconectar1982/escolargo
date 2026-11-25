@@ -52,6 +52,33 @@ function haversineKm(a, b) {
 const minTxt = (m) => (m <= 1 ? '1 minuto' : `unos ${m} minutos`);
 const minutesFor = (km) => Math.max(1, Math.round(((km * 1.35) / AVG_KMH) * 60)); // 1.35 = factor de calles vs. línea recta
 
+// ---------- calles reales (OSRM sobre OpenStreetMap) ----------
+// Servidor de prueba gratuito; para producción conviene uno propio o un proveedor pago (OSRM_URL).
+const OSRM = process.env.OSRM_URL || 'https://router.project-osrm.org';
+async function osrm(pathAndQuery) {
+  try {
+    const r = await fetch(`${OSRM}${pathAndQuery}`, { headers: { 'User-Agent': 'EscolarGo/0.1 (rutas escolares)' }, signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j.code === 'Ok' ? j : null;
+  } catch { return null; }
+}
+const ll = (p) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`;
+async function routeVia(points) {
+  if (points.length < 2) return null;
+  const j = await osrm(`/route/v1/driving/${points.map(ll).join(';')}?overview=full&geometries=geojson`);
+  if (!j || !j.routes || !j.routes[0]) return null;
+  const r = j.routes[0];
+  return { coords: r.geometry.coordinates.map(([lng, lat]) => [lat, lng]), legs: r.legs.map((l) => ({ duration: l.duration, distance: l.distance })) };
+}
+async function streetAt(lat, lng) {
+  const j = await osrm(`/nearest/v1/driving/${lng.toFixed(6)},${lat.toFixed(6)}?number=1`);
+  const w = j && j.waypoints && j.waypoints[0];
+  return w && w.name && w.distance < 80 ? w.name : null;
+}
+const planCache = new Map(); // tripId -> { key, at, route }
+const streetCache = new Map(); // tripId -> { at, lat, lng, street }
+
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const fail = (status, msg) => { throw new HttpError(status, msg); };
 
@@ -128,20 +155,38 @@ async function studentStates(routeId, trip, shift) {
     return { ...s, state, boarded_at: times.get(`${s.id}:subio`) || null, dropped_at: times.get(`${s.id}:bajo`) || times.get(`${s.id}:en_colegio`) || null, near_sent: times.has(`${s.id}:cerca`) };
   });
 }
-// Paradas que faltan, en orden, y minutos estimados hasta cada una (y hasta el colegio en la mañana)
-function etaPlan(trip, route, states) {
-  if (!trip || trip.last_lat == null) return { stops: [], school_min: null };
+// Paradas que faltan, en orden, y minutos estimados hasta cada una (y hasta el colegio en la mañana).
+// Usa la ruta por calles reales si está disponible; si no, una estimación en línea recta.
+async function etaPlan(trip, route, states) {
+  if (!trip || trip.last_lat == null) return { stops: [], school_min: null, plan: null };
   const pendingStops = states.filter((s) => trip.shift === 'manana' ? s.state === 'pendiente' : s.state === 'subio');
-  let pos = { lat: trip.last_lat, lng: trip.last_lng }, acc = 0; const stops = [];
-  const seen = new Map();
+  const bus = { lat: trip.last_lat, lng: trip.last_lng };
+  const way = []; const stopIndex = new Map();
   for (const s of pendingStops) {
     const key = `${s.lat},${s.lng}`;
-    if (!seen.has(key)) { acc += minutesFor(haversineKm(pos, s)); pos = { lat: s.lat, lng: s.lng }; seen.set(key, acc); }
-    stops.push({ student_id: s.id, minutes: seen.get(key) });
+    if (!stopIndex.has(key)) { way.push({ lat: s.lat, lng: s.lng }); stopIndex.set(key, way.length - 1); }
   }
-  let school_min = null;
-  if (trip.shift === 'manana') school_min = acc + minutesFor(haversineKm(pos, { lat: route.school_lat, lng: route.school_lng }));
-  return { stops, school_min };
+  const school = { lat: route.school_lat, lng: route.school_lng };
+  if (trip.shift === 'manana') way.push(school);
+  // Ruta por calles, guardada en memoria para no consultar en cada actualización del GPS
+  const key = way.map((p) => `${p.lat},${p.lng}`).join('|');
+  const posKey = `${bus.lat.toFixed(3)},${bus.lng.toFixed(3)}`;
+  let c = planCache.get(trip.id);
+  if (way.length && (!c || c.key !== key || (c.posKey !== posKey && Date.now() - c.at > 15000))) {
+    const r = await routeVia([bus, ...way]);
+    if (r) { c = { key, posKey, at: Date.now(), route: r }; planCache.set(trip.id, c); }
+  }
+  const real = c && c.key === key ? c.route : null;
+  // minutos acumulados hasta cada punto de "way"
+  const mins = []; let acc = 0, pos = bus;
+  for (let i = 0; i < way.length; i++) {
+    if (real && real.legs[i]) acc += (real.legs[i].duration * 1.3) / 60 + (i > 0 ? 1 : 0); // +30 % por ser buseta y 1 min por parada
+    else acc += minutesFor(haversineKm(pos, way[i])) + (i > 0 ? 1 : 0);
+    pos = way[i]; mins.push(Math.max(1, Math.round(acc)));
+  }
+  const stops = pendingStops.map((s) => ({ student_id: s.id, minutes: mins[stopIndex.get(`${s.lat},${s.lng}`)] }));
+  const school_min = trip.shift === 'manana' && mins.length ? mins[mins.length - 1] : null;
+  return { stops, school_min, plan: real ? real.coords : null };
 }
 
 async function tripSnapshot(routeId) {
@@ -149,8 +194,13 @@ async function tripSnapshot(routeId) {
   const trip = await activeTrip(routeId);
   const shift = trip ? trip.shift : (Number(new Date().toLocaleString('en-US', { timeZone: TZ, hour: 'numeric', hour12: false })) < 12 ? 'manana' : 'tarde');
   const states = await studentStates(routeId, trip, shift);
-  const eta = etaPlan(trip, route, states);
-  return { route, trip, shift, states, eta };
+  const eta = await etaPlan(trip, route, states);
+  let trail = [], streets = [];
+  if (trip) {
+    trail = (await db.all('SELECT lat, lng FROM trip_points WHERE trip_id = ? ORDER BY id DESC LIMIT 2000', [trip.id])).reverse().map((p) => [p.lat, p.lng]);
+    streets = await db.all('SELECT street, at FROM trip_streets WHERE trip_id = ? ORDER BY id DESC LIMIT 40', [trip.id]);
+  }
+  return { route, trip, shift, states, eta, trail, streets, street: streets[0] ? streets[0].street : null };
 }
 
 // ---------- autorización ----------
@@ -212,6 +262,7 @@ api('GET', '/api/parent/overview', async ({ u }) => {
       trip: snap.trip && { id: snap.trip.id, shift: snap.trip.shift, started_at: snap.trip.started_at, lat: snap.trip.last_lat, lng: snap.trip.last_lng, last_at: snap.trip.last_at },
       kids: myStates.map((s) => ({ ...s, eta_min: (snap.eta.stops.find((x) => x.student_id === s.id) || {}).minutes ?? null })),
       school_eta_min: snap.eta.school_min,
+      plan: snap.eta.plan, trail: snap.trail, street: snap.street, streets: snap.streets,
       riders: snap.states.filter((s) => s.state === 'subio').length,
       events,
     });
@@ -239,7 +290,8 @@ api('POST', '/api/parent/absence', async ({ u, body }) => {
 api('GET', '/api/aide/overview', async ({ u }) => {
   need(u, 'auxiliar');
   const snap = await tripSnapshot(await aideRoute(u));
-  return { route: snap.route, trip: snap.trip, shift: snap.shift, students: snap.states.map((s) => ({ ...s, eta_min: (snap.eta.stops.find((x) => x.student_id === s.id) || {}).minutes ?? null })), school_eta_min: snap.eta.school_min };
+  return { route: snap.route, trip: snap.trip, shift: snap.shift, students: snap.states.map((s) => ({ ...s, eta_min: (snap.eta.stops.find((x) => x.student_id === s.id) || {}).minutes ?? null })), school_eta_min: snap.eta.school_min,
+    plan: snap.eta.plan, trail: snap.trail, street: snap.street, streets: snap.streets };
 });
 
 api('POST', '/api/aide/trip/start', async ({ u, body }) => {
@@ -277,9 +329,21 @@ api('POST', '/api/aide/location', async ({ u, body }) => {
     if (h > 5 / 3600) speed = haversineKm({ lat: trip.last_lat, lng: trip.last_lng }, { lat, lng }) / h;
   }
   await db.run('UPDATE trips SET last_lat = ?, last_lng = ?, last_at = ?, speed_kmh = ? WHERE id = ?', [lat, lng, now, speed, trip.id]);
+  if (trip.last_lat == null || haversineKm({ lat: trip.last_lat, lng: trip.last_lng }, { lat, lng }) > 0.015)
+    await db.run('INSERT INTO trip_points (trip_id, lat, lng, at) VALUES (?,?,?,?)', [trip.id, lat, lng, now]);
+  // Nombre de la calle (como máximo cada 8 segundos y si el bus se movió)
+  const sc = streetCache.get(trip.id);
+  if (!sc || (now - sc.at > 8000 && haversineKm(sc, { lat, lng }) > 0.04)) {
+    streetCache.set(trip.id, { at: now, lat, lng, street: sc && sc.street });
+    const street = await streetAt(lat, lng);
+    if (street && (!sc || sc.street !== street)) {
+      streetCache.set(trip.id, { at: now, lat, lng, street });
+      await db.run('INSERT INTO trip_streets (trip_id, street, at) VALUES (?,?,?)', [trip.id, street, now]);
+    }
+  }
   const snap = await tripSnapshot(rid);
   const aud = await routeAudience(rid);
-  emit([aud.aide, ...aud.school, ...aud.parents], 'location', { route_id: rid, lat, lng, at: now });
+  emit([aud.aide, ...aud.school, ...aud.parents], 'location', { route_id: rid, lat, lng, at: now, street: snap.street });
   // Aviso "el bus está cerca" (una vez por estudiante y recorrido)
   for (const stop of snap.eta.stops) {
     const s = snap.states.find((x) => x.id === stop.student_id);
@@ -296,7 +360,7 @@ api('POST', '/api/aide/location', async ({ u, body }) => {
       await notify(aud.school, `Exceso de velocidad · ${snap.route.name}`, `${Math.round(speed)} km/h (límite ${SPEED_LIMIT}).`, 'alerta');
     }
   }
-  return { ok: true, eta: snap.eta };
+  return { ok: true, street: snap.street };
 });
 
 api('POST', '/api/aide/student', async ({ u, body }) => {
@@ -326,6 +390,17 @@ api('POST', '/api/aide/student', async ({ u, body }) => {
   const aud = await routeAudience(rid);
   emit([aud.aide, ...aud.school, ...aud.parents], 'refresh', { route_id: rid });
   return { ok: true };
+});
+
+api('POST', '/api/aide/sim-route', async ({ u, body }) => {
+  need(u, 'auxiliar');
+  const pts = (Array.isArray(body.points) ? body.points : []).slice(0, 25).map((p) => ({ lat: num(p.lat), lng: num(p.lng) })).filter((p) => p.lat != null && p.lng != null);
+  const legs = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const r = await routeVia([pts[i], pts[i + 1]]);
+    legs.push(r ? r.coords : null);
+  }
+  return { legs };
 });
 
 api('POST', '/api/aide/delay', async ({ u, body }) => {
@@ -360,6 +435,7 @@ api('POST', '/api/aide/trip/end', async ({ u }) => {
   }
   await db.run('INSERT INTO trip_events (trip_id, type, at) VALUES (?,?,?)', [trip.id, 'fin', now]);
   await db.run(`UPDATE trips SET status = 'terminada', ended_at = ? WHERE id = ?`, [now, trip.id]);
+  planCache.delete(trip.id); streetCache.delete(trip.id);
   const aud = await routeAudience(rid);
   emit([aud.aide, ...aud.school, ...aud.parents], 'refresh', { route_id: rid });
   return { ok: true };
@@ -386,7 +462,7 @@ api('GET', '/api/school/overview', async ({ u }) => {
     const snap = await tripSnapshot(r.id);
     const alerts = snap.trip ? await db.all(`SELECT type, note, at FROM trip_events WHERE trip_id = ? AND type IN ('retraso','velocidad','panico') ORDER BY at DESC`, [snap.trip.id]) : [];
     out.push({
-      route: snap.route, shift: snap.shift, trip: snap.trip, school_eta_min: snap.eta.school_min, alerts,
+      route: snap.route, shift: snap.shift, trip: snap.trip, school_eta_min: snap.eta.school_min, alerts, street: snap.street, trail: snap.trail,
       counts: {
         total: snap.states.length,
         abordo: snap.states.filter((s) => s.state === 'subio').length,
