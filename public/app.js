@@ -393,33 +393,49 @@ function startGps() {
 }
 function stopGps() { if (S.gpsWatch != null) navigator.geolocation.clearWatch(S.gpsWatch); S.gpsWatch = null; }
 
-// Simulación para probar sin manejar: mueve el bus por las paradas
+// Simulación para probar sin manejar: el bus va de parada en parada y espera a que la auxiliar marque a los estudiantes
 function startSim() {
   const d = S.data; if (!d || !d.trip) return;
   stopGps();
+  const morning = d.trip.shift === 'manana';
   const school = { lat: d.route.school_lat, lng: d.route.school_lng };
-  const stops = d.students.filter((s) => (d.trip.shift === 'manana' ? s.state === 'pendiente' : s.state !== 'no_va' && s.state !== 'bajo')).map((s) => ({ lat: s.lat, lng: s.lng }));
-  const first = d.trip.shift === 'manana' ? stops[0] || school : school;
+  const waiting = (s) => (morning ? s.state === 'pendiente' : s.state === 'subio');
+  // Paradas que faltan, agrupando hermanos que viven en la misma dirección
+  const stops = [];
+  for (const s of d.students.filter(waiting)) {
+    const st = stops.find((x) => x.lat === s.lat && x.lng === s.lng);
+    if (st) st.ids.push(s.id); else stops.push({ lat: s.lat, lng: s.lng, ids: [s.id], name: s.name.split(' ')[0] });
+  }
+  const first = morning ? stops[0] || school : school;
   const here = d.trip.last_lat != null ? { lat: d.trip.last_lat, lng: d.trip.last_lng } : null;
-  // Si el celular está lejos de la ruta (otra ciudad), la simulación arranca cerca de la primera parada
-  // (arranca a ~1,5 km de la primera parada, del lado opuesto al colegio)
+  // Si el celular está lejos de la ruta (otra ciudad), arranca a ~1,5 km de la primera parada, del lado opuesto al colegio
   const away = { lat: first.lat + (first.lat - school.lat) * 0.25, lng: first.lng + (first.lng - school.lng) * 0.25 };
-  const startPt = here && kmBetween(here, first) < 5 ? here : d.trip.shift === 'manana' ? away : school;
-  const way = d.trip.shift === 'manana' ? [startPt, ...stops, school] : [startPt, ...stops];
+  const startPt = here && kmBetween(here, first) < 5 ? here : morning ? away : school;
+  const way = [startPt, ...stops, ...(morning ? [{ ...school, end: true }] : [])];
   const path = [];
   for (let i = 0; i < way.length - 1; i++) {
     const a = way[i], b = way[i + 1];
     const n = Math.min(40, Math.max(3, Math.round(Math.hypot(a.lat - b.lat, a.lng - b.lng) / 0.0012)));
-    for (let k = 0; k < n; k++) path.push({ lat: a.lat + ((b.lat - a.lat) * k) / n, lng: a.lng + ((b.lng - a.lng) * k) / n });
+    for (let k = 1; k <= n; k++) path.push({ lat: a.lat + ((b.lat - a.lat) * k) / n, lng: a.lng + ((b.lng - a.lng) * k) / n, stop: k === n ? b : null });
   }
-  path.push(way[way.length - 1]);
-  let i = 0;
+  let i = 0, waitingAt = null;
   S.gpsMsg = 'Simulación de recorrido activa';
   S.sim = setInterval(async () => {
-    if (i >= path.length) { stopSim(); toast('Simulación terminada', 'Marca a los estudiantes y termina la ruta.'); return; }
+    if (waitingAt) {
+      const still = S.data.students.filter((s) => waitingAt.ids.includes(s.id) && waiting(s));
+      if (still.length) return; // sigue esperando en la parada
+      waitingAt = null; S.gpsMsg = 'Simulación de recorrido activa'; render();
+    }
+    if (i >= path.length) { stopSim(); toast(morning ? 'Llegaron al colegio' : 'Recorrido completo', morning ? 'Toca "Llegamos al colegio · terminar".' : 'Toca "Terminar ruta".'); return; }
     const p = path[i++];
     moveBus(d.route.id, p.lat, p.lng);
-    try { await api('/api/aide/location', { ...p, speed_kmh: 25, simulated: true }); } catch (e) { stopSim(); errToast(e); }
+    try { await api('/api/aide/location', { lat: p.lat, lng: p.lng, speed_kmh: 25, simulated: true }); } catch (e) { stopSim(); errToast(e); return; }
+    if (p.stop && p.stop.ids) {
+      waitingAt = p.stop;
+      S.gpsMsg = `En la parada de ${p.stop.name}: márcalo para seguir`;
+      toast(`Llegaste a la parada de ${p.stop.name}`, morning ? 'Marca "Subió" o "No salió" para que el bus siga.' : 'Marca "Bajó en casa" para que el bus siga.');
+      await load();
+    }
   }, 1500);
   render();
 }
