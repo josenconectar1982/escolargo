@@ -1,0 +1,18 @@
+{
+  "name": "escolargo",
+  "version": "0.1.0",
+  "description": "EscolarGo: seguimiento de rutas escolares con GPS, notificaciones y chat",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "web-push": "^3.6.7"
+  }
+}
