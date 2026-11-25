@@ -22,6 +22,8 @@ La contraseña de todas es `demo1234`.
 | `marcela` | Auxiliar de la Ruta 07 |
 | `colegio` | Coordinación de transporte |
 
+Los datos de ejemplo son de **Cali**: el colegio está en Pance y las paradas en Capri, El Ingenio y Ciudad Jardín.
+
 **Cómo probarlo sin manejar:** entra como `marcela`, inicia la ruta y toca **"Modo prueba: simular recorrido"**. El bus se mueve por las paradas. En otro celular o en otra pestaña, entra como `laura` y mira cómo llegan los avisos.
 
 ## Correrlo en tu computador

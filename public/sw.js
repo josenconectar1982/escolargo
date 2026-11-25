@@ -1,5 +1,5 @@
 /* EscolarGo · service worker: instalación como app y notificaciones push */
-const CACHE = 'escolargo-v2';
+const CACHE = 'escolargo-v3';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/icon.svg', '/icon-192.png', '/apple-touch-icon.png', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });

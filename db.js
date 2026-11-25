@@ -82,12 +82,12 @@ function checkPassword(pw, stored) {
   return want.length === got.length && crypto.timingSafeEqual(got, want);
 }
 
-// Datos de demostración (Bogotá). Todos los nombres, placas y direcciones son ficticios.
+// Datos de demostración (Cali). Todos los nombres, placas y direcciones son ficticios.
 async function seed() {
   const now = Date.now();
   const pw = process.env.DEMO_PASSWORD || 'demo1234';
   const school = await run('INSERT INTO schools (name, lat, lng, address) VALUES (?,?,?,?) RETURNING id',
-    ['Colegio Demo EscolarGo', 4.7032, -74.0420, 'Calle 116 # 15-20']);
+    ['Colegio Demo EscolarGo', 3.3335, -76.5330, 'Pance, Cra. 122 # 18-50']);
   const sid = school.id;
   const mk = (role, name, login, phone) => run(
     'INSERT INTO users (school_id, role, name, login, phone, pass_hash, created_at) VALUES (?,?,?,?,?,?,?) RETURNING id',
@@ -100,15 +100,15 @@ async function seed() {
   const veh = await run('INSERT INTO vehicles (school_id, plate, brand, model, year, capacity, soat_until, tecno_until) VALUES (?,?,?,?,?,?,?,?) RETURNING id',
     [sid, 'ABC-123', 'Chevrolet', 'NPR', 2022, 20, '2026-12-01', '2027-03-15']);
   const route = await run('INSERT INTO routes (school_id, name, vehicle_id, aide_id, driver_name, driver_phone) VALUES (?,?,?,?,?,?) RETURNING id',
-    [sid, 'Ruta 07 · Chicó', veh.id, aide.id, 'Jorge Ramírez', '3005556677']);
+    [sid, 'Ruta 07 · Sur', veh.id, aide.id, 'Jorge Ramírez', '3005556677']);
   const st = [
-    ['Tomás Rojas', '3°', 'Calle 85 # 11-40', 4.6695, -74.0525, p2.id],
-    ['Valentina Gómez', '5°', 'Cra. 15 # 82-30', 4.6668, -74.0560, p1.id],
-    ['Samuel Pérez', '2°', 'Calle 93 # 19-12', 4.6770, -74.0545, p3.id],
-    ['Isabella Gómez', '1°', 'Cra. 15 # 82-30', 4.6668, -74.0560, p1.id],
+    ['Tomás Rojas', '3°', 'Ciudad Jardín, Calle 16 # 105-40', 3.3605, -76.5372, p2.id],
+    ['Valentina Gómez', '5°', 'El Ingenio, Cra. 85 # 13-30', 3.3845, -76.5315, p1.id],
+    ['Samuel Pérez', '2°', 'Capri, Calle 10 # 66-12', 3.3965, -76.5245, p3.id],
+    ['Isabella Gómez', '1°', 'El Ingenio, Cra. 85 # 13-30', 3.3845, -76.5315, p1.id],
   ];
-  // Orden de recogida: Valentina e Isabella (hermanas, misma parada), Tomás, Samuel.
-  const order = [1, 0, 2, 0];
+  // Orden de recogida (de norte a sur, hacia el colegio en Pance): Samuel, Valentina e Isabella (hermanas, misma parada), Tomás.
+  const order = [2, 1, 0, 1];
   for (let i = 0; i < st.length; i++) {
     const [name, grade, address, lat, lng, parent] = st[i];
     const s = await run('INSERT INTO students (school_id, route_id, name, grade, address, lat, lng, stop_order) VALUES (?,?,?,?,?,?,?,?) RETURNING id',

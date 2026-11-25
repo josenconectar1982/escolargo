@@ -145,7 +145,7 @@ function mountMap(slotId) {
     S.mapEl.className = 'map';
     S.mapEl.setAttribute('role', 'region'); S.mapEl.setAttribute('aria-label', 'Mapa de la ruta');
     slot.appendChild(S.mapEl);
-    S.map = L.map(S.mapEl, { zoomControl: true, attributionControl: true }).setView([4.68, -74.05], 13);
+    S.map = L.map(S.mapEl, { zoomControl: true, attributionControl: true }).setView([3.42, -76.52], 13);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap', referrerPolicy: 'strict-origin-when-cross-origin' }).addTo(S.map);
     S.layers = L.layerGroup().addTo(S.map);
   } else slot.appendChild(S.mapEl);
@@ -176,6 +176,19 @@ function drawMap({ buses = [], stops = [], school, line = [] }) {
   }
   const key = pts.length + ':' + buses.length;
   if (pts.length && S.fitted !== key) { S.map.fitBounds(pts, { padding: [36, 36], maxZoom: 15 }); S.fitted = key; }
+}
+
+function kmBetween(a, b) {
+  const r = (x) => (x * Math.PI) / 180, dLat = r(b.lat - a.lat), dLng = r(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
+function moveBus(routeId, lat, lng) {
+  if (!S.map) return;
+  let m = S.busMarkers[routeId];
+  if (!m) m = S.busMarkers[routeId] = L.marker([lat, lng], { icon: busIcon(), zIndexOffset: 1000 }).addTo(S.layers);
+  else m.setLatLng([lat, lng]);
+  if (!S.map.getBounds().pad(-0.15).contains([lat, lng])) S.map.panTo([lat, lng]);
 }
 
 // ---------- PADRES ----------
@@ -373,6 +386,7 @@ function startGps() {
     if (now - S.lastGpsPost < 8000) return;
     S.lastGpsPost = now;
     try {
+      moveBus(S.data.route.id, p.coords.latitude, p.coords.longitude);
       await api('/api/aide/location', { lat: p.coords.latitude, lng: p.coords.longitude, speed_kmh: p.coords.speed != null ? p.coords.speed * 3.6 : undefined });
     } catch (e) { S.gpsMsg = 'GPS: ' + e.message; }
   }, (err) => { S.gpsMsg = err.code === 1 ? 'Activa el permiso de ubicación para compartir el GPS' : 'Sin señal de GPS'; const b = document.querySelector('.banner.b-ok div'); if (b) loadSoon(100); }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
@@ -385,12 +399,17 @@ function startSim() {
   stopGps();
   const school = { lat: d.route.school_lat, lng: d.route.school_lng };
   const stops = d.students.filter((s) => (d.trip.shift === 'manana' ? s.state === 'pendiente' : s.state !== 'no_va' && s.state !== 'bajo')).map((s) => ({ lat: s.lat, lng: s.lng }));
-  const startPt = d.trip.last_lat != null ? { lat: d.trip.last_lat, lng: d.trip.last_lng } : d.trip.shift === 'manana' && stops[0] ? { lat: stops[0].lat - 0.018, lng: stops[0].lng - 0.006 } : school;
+  const first = d.trip.shift === 'manana' ? stops[0] || school : school;
+  const here = d.trip.last_lat != null ? { lat: d.trip.last_lat, lng: d.trip.last_lng } : null;
+  // Si el celular está lejos de la ruta (otra ciudad), la simulación arranca cerca de la primera parada
+  // (arranca a ~1,5 km de la primera parada, del lado opuesto al colegio)
+  const away = { lat: first.lat + (first.lat - school.lat) * 0.25, lng: first.lng + (first.lng - school.lng) * 0.25 };
+  const startPt = here && kmBetween(here, first) < 5 ? here : d.trip.shift === 'manana' ? away : school;
   const way = d.trip.shift === 'manana' ? [startPt, ...stops, school] : [startPt, ...stops];
   const path = [];
   for (let i = 0; i < way.length - 1; i++) {
     const a = way[i], b = way[i + 1];
-    const n = Math.max(2, Math.round(Math.hypot(a.lat - b.lat, a.lng - b.lng) / 0.0016));
+    const n = Math.min(40, Math.max(3, Math.round(Math.hypot(a.lat - b.lat, a.lng - b.lng) / 0.0012)));
     for (let k = 0; k < n; k++) path.push({ lat: a.lat + ((b.lat - a.lat) * k) / n, lng: a.lng + ((b.lng - a.lng) * k) / n });
   }
   path.push(way[way.length - 1]);
@@ -399,6 +418,7 @@ function startSim() {
   S.sim = setInterval(async () => {
     if (i >= path.length) { stopSim(); toast('Simulación terminada', 'Marca a los estudiantes y termina la ruta.'); return; }
     const p = path[i++];
+    moveBus(d.route.id, p.lat, p.lng);
     try { await api('/api/aide/location', { ...p, speed_kmh: 25, simulated: true }); } catch (e) { stopSim(); errToast(e); }
   }, 1500);
   render();
@@ -480,9 +500,9 @@ function connectStream() {
   S.es.addEventListener('refresh', () => loadSoon(300));
   S.es.addEventListener('location', (ev) => {
     const p = JSON.parse(ev.data);
-    const m = S.busMarkers[p.route_id];
-    if (m) { m.setLatLng([p.lat, p.lng]); if (S.map && !S.map.getBounds().pad(-0.1).contains([p.lat, p.lng])) S.map.panTo([p.lat, p.lng]); }
-    loadSoon(m ? 4000 : 300);
+    const had = !!S.busMarkers[p.route_id];
+    moveBus(p.route_id, p.lat, p.lng);
+    loadSoon(had ? 4000 : 300);
   });
   S.es.addEventListener('message', (ev) => {
     const m = JSON.parse(ev.data);
@@ -621,6 +641,11 @@ async function enablePush(ask) {
 }
 function setupPushSilently() { if ('Notification' in window && Notification.permission === 'granted') enablePush(false); }
 
+setInterval(() => {
+  if (!S.token || !S.data || document.hidden || S.sim) return;
+  const live = S.data.trip || (S.data.routes || []).some((r) => r.trip);
+  if (live) load();
+}, 10000);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 document.addEventListener('visibilitychange', () => { if (!document.hidden && S.token) { load(); refreshBadges(); } });
 start();
