@@ -69,6 +69,7 @@ function renderLogin() {
       <div><h1 style="font-size:32px;color:var(--morado)">Escolar<span style="color:var(--turquesa)">Go</span></h1>
       <div class="muted" style="font-size:15px">Tu hijo en ruta, tú en tranquilidad</div></div>
     </div>
+    ${installCard()}
     <form id="lf" class="card" style="margin-top:24px">
       <label for="lu">Usuario</label><input id="lu" type="text" autocomplete="username" autocapitalize="none" required>
       <label for="lp">Contraseña</label><input id="lp" type="password" autocomplete="current-password" required>
@@ -83,6 +84,7 @@ function renderLogin() {
         <button type="button" data-u="colegio">Colegio</button>
       </div></div>
   </div></main>`;
+  bindInstall();
   const f = document.getElementById('lf');
   document.querySelectorAll('.demo button').forEach((b) => (b.onclick = () => { lu.value = b.dataset.u; lp.value = 'demo1234'; lp.focus(); }));
   f.onsubmit = async (ev) => {
@@ -126,8 +128,8 @@ function render() {
       <button class="icon-btn" id="bBell" aria-label="Notificaciones">${ICON.bell}${S.unread ? `<span class="badge">${S.unread}</span>` : ''}</button>
       <button class="icon-btn" id="bOut" aria-label="Cerrar sesión">${ICON.out}</button>
     </div></div></header>
-  <main class="wrap">${body}</main>`;
-  bChat.onclick = openThreads; bBell.onclick = openNotifications;
+  <main class="wrap">${installCard()}${body}</main>`;
+  bChat.onclick = openThreads; bBell.onclick = openNotifications; bindInstall();
   bOut.onclick = () => { if (confirm('¿Cerrar sesión?')) logout(); };
   if (S.user.role === 'padre') bindParent();
   if (S.user.role === 'auxiliar') bindAide();
@@ -144,7 +146,7 @@ function mountMap(slotId) {
     S.mapEl.setAttribute('role', 'region'); S.mapEl.setAttribute('aria-label', 'Mapa de la ruta');
     slot.appendChild(S.mapEl);
     S.map = L.map(S.mapEl, { zoomControl: true, attributionControl: true }).setView([4.68, -74.05], 13);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(S.map);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap', referrerPolicy: 'strict-origin-when-cross-origin' }).addTo(S.map);
     S.layers = L.layerGroup().addTo(S.map);
   } else slot.appendChild(S.mapEl);
   setTimeout(() => S.map.invalidateSize(), 0);
@@ -152,7 +154,7 @@ function mountMap(slotId) {
 }
 function destroyMap() { if (S.map) S.map.remove(); S.map = null; S.mapEl = null; S.layers = null; S.fitted = ''; S.busMarkers = {}; }
 const busIcon = () => L.divIcon({ className: '', html: `<div class="bus-pin">${ICON.bus.replace('width="22" height="22"', 'width="18" height="18"')}</div>`, iconSize: [34, 34], iconAnchor: [17, 17] });
-function drawMap({ buses = [], stops = [], school }) {
+function drawMap({ buses = [], stops = [], school, line = [] }) {
   if (!S.map) return;
   S.layers.clearLayers(); S.busMarkers = {};
   const pts = [];
@@ -165,6 +167,8 @@ function drawMap({ buses = [], stops = [], school }) {
     L.marker([s.lat, s.lng], { icon: L.divIcon({ className: '', html: `<div class="stop-pin ${s.done ? 'done' : ''}"></div>`, iconSize: [18, 18], iconAnchor: [9, 9] }), title: s.label }).bindTooltip(esc(s.label)).addTo(S.layers);
     pts.push([s.lat, s.lng]);
   }
+  const ln = line.filter((p) => p && p.lat != null).map((p) => [p.lat, p.lng]);
+  if (ln.length > 1) L.polyline(ln, { color: '#4B2CA0', weight: 5, opacity: 0.7, dashArray: '8 8' }).addTo(S.layers);
   for (const b of buses) {
     if (b.lat == null) continue;
     S.busMarkers[b.route_id] = L.marker([b.lat, b.lng], { icon: busIcon(), title: b.label, zIndexOffset: 1000 }).bindTooltip(esc(b.label)).addTo(S.layers);
@@ -245,6 +249,7 @@ function bindParent() {
       buses: r.trip && r.trip.lat != null ? [{ route_id: r.route.id, lat: r.trip.lat, lng: r.trip.lng, label: `${r.route.name} · ${r.route.plate}` }] : [],
       stops: r.kids.map((k) => ({ lat: k.lat, lng: k.lng, label: `Parada de ${k.name}`, done: ['subio', 'bajo', 'en_colegio'].includes(k.state) })),
       school: { lat: r.route.school_lat, lng: r.route.school_lng, name: r.route.school_name },
+      line: r.trip && r.trip.lat != null ? [{ lat: r.trip.lat, lng: r.trip.lng }, ...r.kids.filter((k) => (r.trip.shift === 'manana' ? k.state === 'pendiente' : k.state === 'subio')).map((k) => ({ lat: k.lat, lng: k.lng })), ...(r.trip.shift === 'manana' ? [{ lat: r.route.school_lat, lng: r.route.school_lng }] : [])] : [],
     });
   }
   document.querySelectorAll('[data-absent]').forEach((b) => (b.onclick = async () => {
@@ -325,6 +330,7 @@ function bindAide() {
     buses: t && t.last_lat != null ? [{ route_id: d.route.id, lat: t.last_lat, lng: t.last_lng, label: d.route.plate }] : [],
     stops: d.students.filter((s) => s.state !== 'no_va').map((s) => ({ lat: s.lat, lng: s.lng, label: s.name, done: ['subio', 'bajo', 'en_colegio'].includes(s.state) })),
     school: { lat: d.route.school_lat, lng: d.route.school_lng, name: d.route.school_name },
+    line: t && t.last_lat != null ? [{ lat: t.last_lat, lng: t.last_lng }, ...d.students.filter((s) => (t.shift === 'manana' ? s.state === 'pendiente' : s.state === 'subio')).map((s) => ({ lat: s.lat, lng: s.lng })), ...(t.shift === 'manana' ? [{ lat: d.route.school_lat, lng: d.route.school_lng }] : [])] : [],
   });
   document.querySelectorAll('[data-start]').forEach((b) => (b.onclick = async () => {
     b.disabled = true;
@@ -475,7 +481,7 @@ function connectStream() {
   S.es.addEventListener('location', (ev) => {
     const p = JSON.parse(ev.data);
     const m = S.busMarkers[p.route_id];
-    if (m) m.setLatLng([p.lat, p.lng]);
+    if (m) { m.setLatLng([p.lat, p.lng]); if (S.map && !S.map.getBounds().pad(-0.1).contains([p.lat, p.lng])) S.map.panTo([p.lat, p.lng]); }
     loadSoon(m ? 4000 : 300);
   });
   S.es.addEventListener('message', (ev) => {
@@ -569,6 +575,31 @@ function appendMsg(m) {
   const role = { padre: 'Padre/madre', auxiliar: 'Auxiliar', colegio: 'Colegio' }[m.sender_role] || '';
   box.insertAdjacentHTML('beforeend', `<div class="msg ${mine ? 'me' : ''}" data-mid="${m.id}">${esc(m.body)}<div class="meta">${mine ? '' : esc(m.sender_name) + ' · ' + role + ' · '}${hora(m.at)}</div></div>`);
   const sb = document.getElementById('msgsBox'); if (sb) sb.scrollTop = sb.scrollHeight;
+}
+
+// ---------- instalar como app en el celular ----------
+let installEvt = null;
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const canInstall = () => !isStandalone() && !localStorage.getItem('eg_install_hide') && (installEvt || isIOS() || /android/i.test(navigator.userAgent));
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; if (S.token && S.data) render(); else if (!S.token) renderLogin(); });
+window.addEventListener('appinstalled', () => { installEvt = null; toast('¡Listo!', 'EscolarGo quedó en tu pantalla de inicio.'); if (S.token && S.data) render(); });
+function installCard() {
+  if (!canInstall()) return '';
+  return `<div class="install"><img src="/icon-192.png" alt=""><div class="grow"><b>Instala EscolarGo en tu celular</b>Ábrela desde la pantalla de inicio, como cualquier app.</div>
+    <button class="btn small primary" id="bInstall">Instalar</button><button class="icon-btn" id="bInstallX" aria-label="Ocultar" style="background:transparent;color:var(--tinta)">${ICON.x}</button></div>`;
+}
+function bindInstall() {
+  const b = document.getElementById('bInstall'); if (!b) return;
+  b.onclick = async () => {
+    if (installEvt) { installEvt.prompt(); const r = await installEvt.userChoice; installEvt = null; if (r.outcome !== 'accepted') toast('Cuando quieras', 'Puedes instalarla después desde aquí.'); return; }
+    const ios = isIOS();
+    sheet('Instalar EscolarGo', `<div class="sheet-body"><div class="card"><div style="display:flex;gap:12px;align-items:center"><img src="/icon-192.png" alt="" style="width:56px;height:56px;border-radius:14px"><b style="font-size:17px">EscolarGo</b></div>
+      ${ios ? `<ol class="steps-ios"><li>Abre esta página en <b>Safari</b>.</li><li>Toca el botón <b>Compartir</b> (el cuadrado con la flecha hacia arriba).</li><li>Elige <b>Agregar a pantalla de inicio</b>.</li><li>Toca <b>Agregar</b>. El ícono del bus aparecerá con tus apps.</li></ol>`
+      : `<ol class="steps-ios"><li>Abre esta página en <b>Chrome</b>.</li><li>Toca el menú <b>⋮</b> (arriba a la derecha).</li><li>Elige <b>Instalar app</b> o <b>Agregar a la pantalla principal</b>.</li><li>Confirma. El ícono del bus aparecerá con tus apps.</li></ol>`}
+      <p class="muted">Después ábrela siempre desde el ícono: así te llegan las notificaciones.</p></div></div>`);
+  };
+  document.getElementById('bInstallX').onclick = () => { localStorage.setItem('eg_install_hide', '1'); document.querySelector('.install')?.remove(); };
 }
 
 // ---------- notificaciones push ----------

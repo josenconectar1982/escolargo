@@ -120,3 +120,9 @@ td { padding: 10px 8px; border-top: 1px solid var(--borde); vertical-align: midd
 .alert { background: var(--coral-bg); color: var(--coral-txt); border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-top: 8px; }
 .hidden { display: none !important; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.install { background: var(--amarillo); color: var(--tinta); border-radius: var(--r); padding: 12px 14px; margin-top: 12px; display: flex; align-items: center; gap: 12px; }
+.install img { width: 44px; height: 44px; border-radius: 11px; flex-shrink: 0; }
+.install .grow { flex: 1; min-width: 0; font-size: 14px; }
+.install b { display: block; font-size: 15px; }
+.steps-ios { margin: 12px 0 0; padding-left: 20px; line-height: 1.9; font-size: 15px; }

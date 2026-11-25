@@ -487,7 +487,7 @@ function serveStatic(req, res, pathname) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin'); // OpenStreetMap exige saber desde qué sitio se piden los mapas
   if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
   try {
     if (url.pathname === '/api/stream') {
