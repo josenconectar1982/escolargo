@@ -64,6 +64,7 @@ async function migrate() {
     `CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id), sub_json TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS trip_points (id ${ID}, trip_id INTEGER REFERENCES trips(id), lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, at BIGINT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS trip_streets (id ${ID}, trip_id INTEGER REFERENCES trips(id), street TEXT NOT NULL, at BIGINT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS panics (id ${ID}, route_id INTEGER REFERENCES routes(id), trip_id INTEGER, aide_id INTEGER REFERENCES users(id), at BIGINT NOT NULL, lat DOUBLE PRECISION, lng DOUBLE PRECISION, ack_by INTEGER, ack_at BIGINT, closed_by INTEGER, closed_at BIGINT)`,
     `CREATE INDEX IF NOT EXISTS ix_points_trip ON trip_points(trip_id)`,
     `CREATE INDEX IF NOT EXISTS ix_streets_trip ON trip_streets(trip_id)`,
     `CREATE INDEX IF NOT EXISTS ix_events_trip ON trip_events(trip_id)`,

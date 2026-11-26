@@ -1,5 +1,5 @@
 /* EscolarGo · service worker: instalación como app y notificaciones push */
-const CACHE = 'escolargo-v5';
+const CACHE = 'escolargo-v6';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/icon.svg', '/icon-192.png', '/apple-touch-icon.png', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
@@ -20,7 +20,7 @@ self.addEventListener('push', (e) => {
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     if (wins.some((w) => w.visibilityState === 'visible')) return; // la app abierta ya muestra el aviso
     await self.registration.showNotification(d.title || 'EscolarGo', {
-      body: d.body || '', icon: '/icon-192.png', badge: '/icon-192.png', tag: d.tag, renotify: !!d.tag,
+      body: d.body || '', icon: '/icon-192.png', badge: '/icon-192.png', tag: d.tag, renotify: !!d.tag, requireInteraction: d.kind === 'panico',
       vibrate: d.kind === 'panico' ? [400, 200, 400, 200, 400] : [120, 60, 120],
     });
   })());

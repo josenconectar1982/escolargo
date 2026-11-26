@@ -54,7 +54,7 @@ const errToast = (e) => toast('No se pudo', e.message);
 function logout() {
   localStorage.removeItem('eg_token'); localStorage.removeItem('eg_user');
   S.token = null; S.user = null; S.data = null;
-  stopGps(); stopSim();
+  stopGps(); stopSim(); setAlarm(false);
   if (S.es) { S.es.close(); S.es = null; }
   destroyMap();
   renderLogin();
@@ -209,7 +209,7 @@ const KID_STATE = {
   pendiente: ['Esperando el bus', 'p-amarillo'], subio: ['En el bus', 'p-turquesa'], bajo: ['Llegó a casa', 'p-turquesa'],
   en_colegio: ['En el colegio', 'p-turquesa'], no_salio: ['No salió', 'p-coral'], no_va: ['No va hoy', 'p-lila'],
 };
-const EV_TXT = { inicio: 'Salió la ruta', subio: 'subió al bus', bajo: 'llegó a casa', en_colegio: 'llegó al colegio', no_salio: 'no salió', cerca: 'el bus está cerca', retraso: 'Retraso', fin: 'Terminó la ruta', velocidad: 'Alerta de velocidad', panico: 'Emergencia' };
+const EV_TXT = { aviso: 'Aviso del colegio', inicio: 'Salió la ruta', subio: 'subió al bus', bajo: 'llegó a casa', en_colegio: 'llegó al colegio', no_salio: 'no salió', cerca: 'el bus está cerca', retraso: 'Retraso', fin: 'Terminó la ruta', velocidad: 'Alerta de velocidad', panico: 'Emergencia' };
 
 function viewParent() {
   const d = S.data;
@@ -262,7 +262,7 @@ function viewParent() {
     </div>
     ${t ? streetsCard(r.streets) : ''}
     ${t ? `<div class="card"><h3>Recorrido de hoy</h3><div class="timeline">${r.events.map((e) => `
-      <div class="tl"><div class="dot"><span></span><span></span></div><div class="txt"><span>${e.student_name ? `<b>${esc(e.student_name.split(' ')[0])}</b> ` : ''}${EV_TXT[e.type] || esc(e.type)}${e.type === 'retraso' ? ': ' + esc(e.note) : ''}</span><span class="muted">${hora(e.at)}</span></div></div>`).join('')}
+      <div class="tl"><div class="dot"><span></span><span></span></div><div class="txt"><span>${e.student_name ? `<b>${esc(e.student_name.split(' ')[0])}</b> ` : ''}${EV_TXT[e.type] || esc(e.type)}${e.type === 'retraso' || e.type === 'aviso' ? ': ' + esc(e.note) : ''}</span><span class="muted">${hora(e.at)}</span></div></div>`).join('')}
     </div></div>` : ''}
     <div class="btns"><button class="btn primary" data-chat="${v.id}">Escribir a la auxiliar</button>
       ${v.aide_phone ? `<a class="btn" href="tel:${esc(v.aide_phone)}">Llamar a la auxiliar</a>` : ''}</div>`;
@@ -327,6 +327,17 @@ function viewAide() {
       <div class="stat"><div class="muted">No van</div><div class="n">${count('no_va')}</div></div>
     </div>
   </div>
+  ${d.panic ? `
+    <div class="emergency" role="alert">
+      <div class="em-title">Emergencia activa</div>
+      <div>Avisaste al colegio a las ${hora(d.panic.at)}.</div>
+      <div style="margin-top:6px;font-weight:800">${d.panic.ack_at ? `✓ El colegio la recibió: ${esc(d.panic.ack_name || '')} · ${hora(d.panic.ack_at)}` : 'Esperando que el colegio confirme…'}</div>
+      <div class="btns">
+        <a class="btn danger" href="tel:123">Llamar al 123</a>
+        ${d.school_phone ? `<a class="btn" href="tel:${esc(d.school_phone)}">Llamar al colegio</a>` : ''}
+        <button class="btn" id="bPanicAgain">Enviar alerta otra vez</button>
+      </div>
+    </div>` : ''}
   ${t ? `
     <div class="banner b-ok">${ICON.check}<div><b>Ruta de la ${shiftName(shift).toLowerCase()} en curso</b>Desde las ${hora(t.started_at)} · ${esc(S.gpsMsg || 'GPS esperando señal…')}</div></div>
     <div class="btns">
@@ -382,10 +393,11 @@ function bindAide() {
   };
   const sim = document.getElementById('bSim');
   if (sim) sim.onclick = () => (S.sim ? stopSim() : startSim());
-  bPanic.onclick = async () => {
-    if (!confirm('¿Activar el botón de pánico? Se avisa de inmediato al colegio con tu ubicación.')) return;
-    try { await api('/api/aide/panic', {}); toast('Alerta enviada', 'El colegio fue avisado.'); } catch (e) { errToast(e); }
+  const panic = async () => {
+    try { await api('/api/aide/panic', {}); toast('Alerta enviada', 'El colegio fue avisado con tu ubicación.'); if (navigator.vibrate) navigator.vibrate(300); await load(); } catch (e) { errToast(e); }
   };
+  bPanic.onclick = async () => { if (confirm('¿Activar el botón de pánico? Se avisa de inmediato al colegio con tu ubicación.')) panic(); };
+  document.getElementById('bPanicAgain')?.addEventListener('click', panic);
   if (t && !S.sim) startGps(); else if (!t) { stopGps(); stopSim(); }
 }
 
@@ -472,6 +484,32 @@ async function startSim() {
 }
 function stopSim() { if (S.sim) { if (S.sim !== 'cargando') clearInterval(S.sim); S.sim = null; S.gpsMsg = ''; if (S.user && S.user.role === 'auxiliar' && S.data) render(); } }
 
+// ---------- alarma sonora de emergencia (panel del colegio) ----------
+const Alarm = { ctx: null, timer: null };
+function unlockAudio() {
+  try {
+    if (!Alarm.ctx) Alarm.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (Alarm.ctx.state === 'suspended') Alarm.ctx.resume();
+  } catch {}
+}
+['pointerdown', 'keydown', 'touchstart'].forEach((ev) => window.addEventListener(ev, () => { unlockAudio(); document.getElementById('soundHint')?.remove(); }, { passive: true }));
+const audioReady = () => Alarm.ctx && Alarm.ctx.state === 'running';
+function beep() {
+  if (!audioReady()) return;
+  const t = Alarm.ctx.currentTime;
+  [0, 0.25].forEach((d, i) => {
+    const o = Alarm.ctx.createOscillator(), g = Alarm.ctx.createGain();
+    o.type = 'square'; o.frequency.value = i ? 660 : 880;
+    g.gain.setValueAtTime(0.0001, t + d); g.gain.exponentialRampToValueAtTime(0.25, t + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.22);
+    o.connect(g).connect(Alarm.ctx.destination); o.start(t + d); o.stop(t + d + 0.24);
+  });
+  if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+}
+function setAlarm(on) {
+  if (on && !Alarm.timer) { beep(); Alarm.timer = setInterval(beep, 1200); }
+  if (!on && Alarm.timer) { clearInterval(Alarm.timer); Alarm.timer = null; }
+}
+
 // ---------- COLEGIO ----------
 function viewSchool() {
   const d = S.data;
@@ -483,13 +521,35 @@ function viewSchool() {
   const unassigned = d.routes.filter((r) => !r.route.aide_id);
   const pill = (r) => {
     if (!r.trip) return '<span class="pill p-lila">Sin iniciar</span>';
-    if (r.alerts.some((a) => a.type === 'panico')) return '<span class="pill p-coral">Emergencia</span>';
+    if ((d.panics || []).some((p) => p.route_id === r.route.id) || r.alerts.some((a) => a.type === 'panico')) return '<span class="pill p-coral">Emergencia</span>';
     if (r.alerts.some((a) => a.type === 'retraso')) return '<span class="pill p-coral">Con retraso</span>';
     return `<span class="pill p-amarillo">En ruta · ${shiftName(r.trip.shift)}</span>`;
   };
   const daysTo = (s) => (s ? Math.ceil((new Date(s + 'T00:00:00') - new Date()) / 86400000) : null);
   const docTxt = (n) => (n == null ? '<span class="muted">sin dato</span>' : n < 0 ? '<b style="color:#A3291B">vencido</b>' : n <= 30 ? `<b style="color:#993C1D">en ${n} días</b>` : `<span style="color:var(--verde-txt);font-weight:700">al día</span>`);
+  const panics = d.panics || [];
+  const panicHtml = panics.map((p) => `
+    <div class="emergency" role="alert">
+      <div class="row" style="flex-wrap:wrap;align-items:flex-start">
+        <div><div class="em-title">EMERGENCIA · ${esc(p.route_name)}</div>
+          <div>Activada por <b>${esc(p.aide_name || 'la auxiliar')}</b> a las ${hora(p.at)} · Vehículo <b>${esc(p.plate || '—')}</b> · Conductor ${esc(p.driver_name || '—')}</div>
+          <div style="margin-top:4px">${p.ack_at ? `<span class="pill p-turquesa">Recibida por ${esc(p.ack_name || 'el colegio')} · ${hora(p.ack_at)}</span>` : '<span class="pill" style="background:#fff;color:#A3291B">Nadie la ha atendido</span>'}</div>
+        </div>
+      </div>
+      <div class="btns">
+        ${p.ack_at ? '' : `<button class="btn primary" data-ack="${p.id}">Recibido, vamos en camino</button>`}
+        ${p.aide_phone ? `<a class="btn" href="tel:${esc(p.aide_phone)}">Llamar a la auxiliar</a>` : ''}
+        ${p.driver_phone ? `<a class="btn" href="tel:${esc(p.driver_phone)}">Llamar al conductor</a>` : ''}
+        ${p.lat != null ? `<a class="btn" href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Ver ubicación</a>` : ''}
+        <a class="btn danger" href="tel:123">Llamar al 123</a>
+        <button class="btn" data-inform="${p.route_id}" data-rname="${esc(p.route_name)}">Informar a los padres</button>
+        <button class="btn" data-close="${p.id}">Cerrar emergencia</button>
+      </div>
+    </div>`).join('');
+  const needSound = panics.some((p) => !p.ack_at) && !audioReady();
   return `
+  ${needSound ? '<button id="soundHint" class="btn danger" style="width:100%;margin-top:12px">Toca aquí para activar el sonido de la alarma</button>' : ''}
+  ${panicHtml}
   <div class="row" style="margin-top:16px;flex-wrap:wrap">
     <div><h1 style="font-size:26px">Rutas en vivo</h1><div class="muted">${esc(d.school.name)} · ${new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' })}</div></div>
     <button class="btn primary" id="bThreads">Conversaciones con padres</button>
@@ -503,9 +563,9 @@ function viewSchool() {
   <div id="mapslot"></div>
   <div class="cols" style="margin-top:12px">
     <section class="main card" style="margin-top:0"><h2>Estado de las rutas</h2>
-      <div class="table-box"><table><thead><tr><th>Ruta</th><th>Vehículo</th><th>Auxiliar</th><th>Conductor</th><th>A bordo</th><th>Va por</th><th>Llegada</th><th>Estado</th></tr></thead><tbody>
+      <div class="table-box"><table><thead><tr><th>Ruta</th><th>Vehículo</th><th>Auxiliar</th><th>Conductor</th><th>A bordo</th><th>Va por</th><th>Llegada</th><th>Estado</th><th></th></tr></thead><tbody>
       ${d.routes.map((r) => `<tr><td><b>${esc(r.route.name)}</b></td><td>${esc(r.route.plate || '—')}</td><td>${esc(r.route.aide_name || 'Sin asignar')}</td><td>${esc(r.route.driver_name || '—')}</td>
-        <td>${r.counts.abordo} / ${r.counts.total - r.counts.no_va}</td><td>${r.trip && r.street ? esc(r.street) : '—'}</td><td>${r.trip && r.school_eta_min != null ? `~${r.school_eta_min} min` : '—'}</td><td>${pill(r)}</td></tr>`).join('')}
+        <td>${r.counts.abordo} / ${r.counts.total - r.counts.no_va}</td><td>${r.trip && r.street ? esc(r.street) : '—'}</td><td>${r.trip && r.school_eta_min != null ? `~${r.school_eta_min} min` : '—'}</td><td>${pill(r)}</td><td><button class="btn small" data-inform="${r.route.id}" data-rname="${esc(r.route.name)}">Avisar a padres</button></td></tr>`).join('')}
       </tbody></table></div>
     </section>
     <section class="side">
@@ -529,6 +589,37 @@ function bindSchool() {
     stops: [], school: d.school, trail: d.routes.length === 1 ? d.routes[0].trail || [] : [],
   });
   bThreads.onclick = openThreads;
+  setAlarm((d.panics || []).some((p) => !p.ack_at));
+  document.getElementById('soundHint')?.addEventListener('click', () => { unlockAudio(); setAlarm(false); setTimeout(() => setAlarm((S.data.panics || []).some((p) => !p.ack_at)), 100); });
+  document.querySelectorAll('[data-ack]').forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try { await api('/api/school/panic/ack', { id: Number(b.dataset.ack) }); toast('Alerta recibida', 'La auxiliar ya sabe que el colegio la está atendiendo.'); await load(); } catch (e) { errToast(e); b.disabled = false; }
+  }));
+  document.querySelectorAll('[data-close]').forEach((b) => (b.onclick = async () => {
+    if (!confirm('¿Cerrar la emergencia? Hazlo solo cuando la situación esté resuelta.')) return;
+    try { await api('/api/school/panic/close', { id: Number(b.dataset.close) }); toast('Emergencia cerrada', ''); await load(); } catch (e) { errToast(e); }
+  }));
+  document.querySelectorAll('[data-inform]').forEach((b) => (b.onclick = () => openInformParents(Number(b.dataset.inform), b.dataset.rname)));
+}
+function openInformParents(routeId, routeName) {
+  const el = sheet(`Avisar a los padres · ${routeName}`, `<div class="sheet-body"><form id="ipf" class="card">
+    <label for="ipm">Mensaje para todos los padres de esta ruta</label>
+    <textarea id="ipm" rows="5" maxlength="500" style="resize:vertical"></textarea>
+    <div class="demo">
+      <button type="button" data-tpl="La ruta tuvo un inconveniente en el camino. Todos los estudiantes están bien y acompañados. Les mantendremos informados.">Inconveniente, todos bien</button>
+      <button type="button" data-tpl="La ruta va con retraso por una novedad en la vía. Los estudiantes están bien. Les avisaremos cuando lleguen.">Retraso</button>
+      <button type="button" data-tpl="Por una novedad con el vehículo, otro vehículo del colegio recogerá a los estudiantes. Todos están bien.">Cambio de vehículo</button>
+    </div>
+    <div class="err" id="ipe"></div>
+    <button class="btn primary" type="submit" style="width:100%">Enviar a los padres</button>
+  </form></div>`);
+  el.querySelectorAll('[data-tpl]').forEach((b) => (b.onclick = () => { ipm.value = b.dataset.tpl; ipe.textContent = ''; }));
+  ipm.oninput = () => (ipe.textContent = '');
+  el.querySelector('#ipf').onsubmit = async (e) => {
+    e.preventDefault();
+    if (!ipm.value.trim()) { ipe.textContent = 'Escribe el mensaje o elige uno de los modelos.'; return; }
+    try { const r = await api('/api/school/notify-parents', { route_id: routeId, message: ipm.value }); closeSheet(); toast('Aviso enviado', `Les llegó a ${r.sent} ${r.sent === 1 ? 'familia' : 'familias'}.`); } catch (err) { ipe.textContent = err.message; }
+  };
 }
 
 // ---------- tiempo real ----------
@@ -542,7 +633,7 @@ function connectStream() {
     if (document.hidden && !S.pushOn && 'Notification' in window && Notification.permission === 'granted') {
       navigator.serviceWorker?.getRegistration().then((reg) => reg && reg.showNotification(n.title, { body: n.body, icon: '/icon-192.png', badge: '/icon-192.png', tag: n.tag }));
     }
-    if (n.kind === 'panico' && navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]);
+    if (n.kind === 'panico') { if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]); load(); }
   });
   S.es.addEventListener('refresh', () => loadSoon(300));
   S.es.addEventListener('location', (ev) => {

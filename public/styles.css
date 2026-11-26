@@ -130,3 +130,12 @@ td { padding: 10px 8px; border-top: 1px solid var(--borde); vertical-align: midd
 .legend { display: flex; gap: 16px; font-size: 13px; font-weight: 700; color: var(--gris); margin-top: 6px; padding-left: 4px; }
 .legend i { display: inline-block; width: 22px; height: 6px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
 .legend i.dash { background: repeating-linear-gradient(90deg, #12C4A8 0 4px, transparent 4px 9px); }
+
+.emergency { background: #A3291B; color: #fff; border-radius: var(--r); padding: 14px 16px; margin-top: 12px; }
+.emergency .em-title { font-size: 20px; font-weight: 800; }
+.emergency .btn { border-color: #fff; }
+.emergency .btn:not(.primary):not(.danger) { background: #fff; color: #A3291B; }
+.emergency .btn.primary { background: var(--amarillo); border-color: var(--amarillo); color: var(--tinta); }
+.emergency .btn.danger { background: var(--coral); border-color: #fff; color: var(--coral-txt); }
+textarea { width: 100%; border-radius: 12px; border: 2px solid var(--borde); background: #fff; padding: 10px 12px; }
+a.btn { text-decoration: none; }

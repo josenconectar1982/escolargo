@@ -291,7 +291,9 @@ api('GET', '/api/aide/overview', async ({ u }) => {
   need(u, 'auxiliar');
   const snap = await tripSnapshot(await aideRoute(u));
   return { route: snap.route, trip: snap.trip, shift: snap.shift, students: snap.states.map((s) => ({ ...s, eta_min: (snap.eta.stops.find((x) => x.student_id === s.id) || {}).minutes ?? null })), school_eta_min: snap.eta.school_min,
-    plan: snap.eta.plan, trail: snap.trail, street: snap.street, streets: snap.streets };
+    plan: snap.eta.plan, trail: snap.trail, street: snap.street, streets: snap.streets,
+    panic: (await panicInfo('p.route_id = ? AND p.closed_at IS NULL', [snap.route.id]))[0] || null,
+    school_phone: ((await db.one(`SELECT phone FROM users WHERE role = 'colegio' AND school_id = ? AND phone IS NOT NULL ORDER BY id LIMIT 1`, [snap.route.school_id])) || {}).phone || null };
 });
 
 api('POST', '/api/aide/trip/start', async ({ u, body }) => {
@@ -441,16 +443,69 @@ api('POST', '/api/aide/trip/end', async ({ u }) => {
   return { ok: true };
 });
 
-api('POST', '/api/aide/panic', async ({ u, body }) => {
+api('POST', '/api/aide/panic', async ({ u }) => {
   need(u, 'auxiliar');
   const rid = await aideRoute(u);
   const trip = await activeTrip(rid);
   const route = await routeDetail(rid);
   const aud = await routeAudience(rid);
-  if (trip) await db.run('INSERT INTO trip_events (trip_id, type, note, at, lat, lng) VALUES (?,?,?,?,?,?)', [trip.id, 'panico', str(body.note, 140), Date.now(), trip.last_lat, trip.last_lng]);
-  const where = trip && trip.last_lat != null ? ` Ubicación: https://maps.google.com/?q=${trip.last_lat},${trip.last_lng}` : '';
-  await notify(aud.school, `EMERGENCIA · ${route.name}`, `${u.name} activó el botón de pánico. Vehículo ${route.plate}. Llama al ${u.phone || route.driver_phone}.${where}`, 'panico');
+  const now = Date.now();
+  // Ubicación: la del recorrido activo o la última conocida del bus
+  const last = trip && trip.last_lat != null ? trip : await db.one('SELECT last_lat, last_lng FROM trips WHERE route_id = ? AND last_lat IS NOT NULL ORDER BY id DESC LIMIT 1', [rid]);
+  const lat = last ? last.last_lat : null, lng = last ? last.last_lng : null;
+  let p = await db.one('SELECT id FROM panics WHERE route_id = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1', [rid]);
+  if (!p) {
+    p = await db.run('INSERT INTO panics (route_id, trip_id, aide_id, at, lat, lng) VALUES (?,?,?,?,?,?) RETURNING id', [rid, trip ? trip.id : null, u.id, now, lat, lng]);
+    if (trip) await db.run('INSERT INTO trip_events (trip_id, type, at, lat, lng) VALUES (?,?,?,?,?)', [trip.id, 'panico', now, lat, lng]);
+  }
+  const where = lat != null ? ` Ubicación: https://maps.google.com/?q=${lat},${lng}` : '';
+  await notify(aud.school, `EMERGENCIA · ${route.name}`, `${u.name} activó el botón de pánico. Vehículo ${route.plate}. Llama al ${u.phone || route.driver_phone}.${where}`, 'panico', { tag: `panic-${p.id}` });
+  emit([aud.aide, ...aud.school], 'refresh', { route_id: rid });
+  return { ok: true, panic_id: p.id };
+});
+
+async function panicInfo(where, params) {
+  return db.all(`SELECT p.*, r.name AS route_name, r.driver_name, r.driver_phone, v.plate, a.name AS aide_name, a.phone AS aide_phone, k.name AS ack_name
+    FROM panics p JOIN routes r ON r.id = p.route_id LEFT JOIN vehicles v ON v.id = r.vehicle_id LEFT JOIN users a ON a.id = p.aide_id LEFT JOIN users k ON k.id = p.ack_by
+    WHERE ${where} ORDER BY p.at DESC`, params);
+}
+async function schoolPanic(u, id) {
+  const p = await db.one('SELECT p.*, r.school_id FROM panics p JOIN routes r ON r.id = p.route_id WHERE p.id = ?', [id]);
+  if (!p || p.school_id !== u.school_id) fail(404, 'Emergencia no encontrada');
+  return p;
+}
+api('POST', '/api/school/panic/ack', async ({ u, body }) => {
+  need(u, 'colegio');
+  const p = await schoolPanic(u, num(body.id));
+  if (!p.ack_at) await db.run('UPDATE panics SET ack_by = ?, ack_at = ? WHERE id = ?', [u.id, Date.now(), p.id]);
+  const aud = await routeAudience(p.route_id);
+  await notify([p.aide_id], 'El colegio recibió tu alerta', `${u.name} ya está atendiendo la emergencia. Mantén el celular a la mano.`, 'panico_recibido');
+  emit([aud.aide, ...aud.school], 'refresh', { route_id: p.route_id });
   return { ok: true };
+});
+api('POST', '/api/school/panic/close', async ({ u, body }) => {
+  need(u, 'colegio');
+  const p = await schoolPanic(u, num(body.id));
+  const now = Date.now();
+  await db.run('UPDATE panics SET closed_by = ?, closed_at = ?, ack_by = COALESCE(ack_by, ?), ack_at = COALESCE(ack_at, ?) WHERE id = ?', [u.id, now, u.id, now, p.id]);
+  const aud = await routeAudience(p.route_id);
+  await notify([p.aide_id], 'Emergencia cerrada', `${u.name} cerró la emergencia.`, 'panico_cerrado');
+  emit([aud.aide, ...aud.school], 'refresh', { route_id: p.route_id });
+  return { ok: true };
+});
+api('POST', '/api/school/notify-parents', async ({ u, body }) => {
+  need(u, 'colegio');
+  const rid = num(body.route_id);
+  const r = await db.one('SELECT id, name, school_id FROM routes WHERE id = ?', [rid]);
+  if (!r || r.school_id !== u.school_id) fail(404, 'Ruta no encontrada');
+  const text = str(body.message, 500);
+  if (!text) fail(400, 'Escribe el mensaje para los padres');
+  const aud = await routeAudience(rid);
+  const trip = await activeTrip(rid);
+  if (trip) await db.run('INSERT INTO trip_events (trip_id, type, note, at) VALUES (?,?,?,?)', [trip.id, 'aviso', text, Date.now()]);
+  await notify(aud.parents, `Aviso del colegio · ${r.name}`, text, 'aviso_colegio');
+  emit(aud.parents, 'refresh', { route_id: rid });
+  return { ok: true, sent: aud.parents.length };
 });
 
 // --- colegio ---
@@ -474,7 +529,8 @@ api('GET', '/api/school/overview', async ({ u }) => {
   }
   const vehicles = await db.all('SELECT plate, brand, model, soat_until, tecno_until FROM vehicles WHERE school_id = ? ORDER BY plate', [u.school_id]);
   const school = await db.one('SELECT name, lat, lng FROM schools WHERE id = ?', [u.school_id]);
-  return { school, routes: out, vehicles, day: today() };
+  const panics = await panicInfo('r.school_id = ? AND p.closed_at IS NULL', [u.school_id]);
+  return { school, routes: out, vehicles, panics, day: today() };
 });
 
 // --- chat padre ↔ auxiliar (el colegio puede leer todo) ---
